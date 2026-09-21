@@ -50,6 +50,15 @@
             text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
             font-family: monospace;
         }
+        #hud-elixir {
+            position: absolute;
+            top: 45px;
+            left: 15px;
+            font-size: 20px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            font-family: monospace;
+        }
         #screen-overlay {
             position: absolute;
             top: 0;
@@ -116,6 +125,7 @@
             <div id="hud-distance">目標まで: 2500m</div>
             <div id="hud-integrity">肉塊の安定度: 100%</div>
         </div>
+        <div id="hud-elixir">🥤 x1</div>
     </div>
 
     <div id="screen-overlay">
@@ -129,7 +139,7 @@
 </div>
 
 <div id="controls-hint">
-    【操作方法】 ← / → または A / D : 移動 | Space / ↑ / W : ジャンプ・上昇
+    【操作方法】 ← / → または A / D : 移動 | Enter / ↑ / W : ジャンプ・上昇 | Space（押している間）: 鈍足＆地形ダメージ無敵 | 1 : エリクサー使用（肉塊全回復・1回限り）
 </div>
 
 <script>
@@ -143,11 +153,13 @@
     
     const hudDistance = document.getElementById('hud-distance');
     const hudIntegrity = document.getElementById('hud-integrity');
+    const hudElixir = document.getElementById('hud-elixir');
 
     // ゲーム状態
     let gameState = 'START'; // START, PLAYING, GAMEOVER, CLEAR
     let keys = {};
     let particles = [];
+    let elixirUsed = false; // エリクサー（肉塊全回復）使用済みフラグ
     
     // カメラとステージ設定
     let cameraX = 0;
@@ -238,7 +250,10 @@
                 radius: 20,
                 type: 'turret',
                 lastShot: 0,
-                shootInterval: 1500 + Math.random() * 1000
+                shootInterval: 1500 + Math.random() * 1000,
+                shotsFired: 0,
+                maxShots: 5,
+                disabled: false
             });
         }
     }
@@ -261,6 +276,8 @@
         cargo.vx = 0;
         cargo.vy = 0;
         cargo.integrity = 100;
+        elixirUsed = false;
+        hudElixir.textContent = '🥤 x 1';
         
         cameraX = 0;
         bullets = [];
@@ -328,13 +345,27 @@
         if (gameState !== 'PLAYING') return;
 
         // --- 1. プレイヤーの移動制御 ---
+        // 1キー：エリクサー（肉塊の破損を全回復、1回限り）
+        if (keys['Digit1'] && !elixirUsed) {
+            elixirUsed = true;
+            cargo.integrity = 100;
+            hudElixir.textContent = '🥤 x 0';
+            for (let i = 0; i < 20; i++) {
+                spawnParticle(cargo.x, cargo.y, '#7CFC00', Math.random() * 4 + 3);
+            }
+        }
+
+        // Spaceキーを押している間：鈍足（水平加速度1/2）＆肉塊が地形ダメージのみ無敵になる
+        const isGuardMode = !!keys['Space'];
+        const moveAccel = isGuardMode ? player.accel * 0.5 : player.accel;
+
         if (keys['ArrowLeft'] || keys['KeyA']) {
-            player.vx -= player.accel;
+            player.vx -= moveAccel;
         }
         if (keys['ArrowRight'] || keys['KeyD']) {
-            player.vx += player.accel;
+            player.vx += moveAccel;
         }
-        if (keys['Space'] || keys['ArrowUp'] || keys['KeyW']) {
+        if (keys['Enter'] || keys['ArrowUp'] || keys['KeyW']) {
             if (player.isGrounded) {
                 player.vy = player.jumpForce;
                 player.isGrounded = false;
@@ -406,7 +437,7 @@
             cargo.vy = -cargo.vy * cargo.elasticity;
             cargo.vx *= 0.8;
 
-            if (impact > 1.5) {
+            if (impact > 1.5 && !isGuardMode) {
                 const damage = impact * 4;
                 cargo.integrity -= damage;
                 // 赤い肉塊の飛び散りエフェクト
@@ -418,7 +449,7 @@
 
         // --- 3. 敵・トラップの処理 ---
         hazards.forEach(h => {
-            if (h.type === 'turret') {
+            if (h.type === 'turret' && !h.disabled) {
                 // カメラ内にあれば撃ってくる
                 if (h.x > cameraX - 50 && h.x < cameraX + 850) {
                     if (timestamp - h.lastShot > h.shootInterval) {
@@ -432,6 +463,10 @@
                             radius: 5
                         });
                         h.lastShot = timestamp;
+                        h.shotsFired++;
+                        if (h.shotsFired >= h.maxShots) {
+                            h.disabled = true; // 弾を撃ちつくして無力化
+                        }
                     }
                 }
             }
@@ -558,12 +593,12 @@
 
         // 敵（砲台）の描画
         hazards.forEach(h => {
-            ctx.fillStyle = '#4f5d75';
+            ctx.fillStyle = h.disabled ? '#3a3a3a' : '#4f5d75';
             ctx.beginPath();
             ctx.arc(h.x, h.y, h.radius, Math.PI, 0);
             ctx.fill();
             // 砲身
-            ctx.strokeStyle = '#2d3748';
+            ctx.strokeStyle = h.disabled ? '#222222' : '#2d3748';
             ctx.lineWidth = 6;
             ctx.beginPath();
             ctx.moveTo(h.x, h.y - 10);
