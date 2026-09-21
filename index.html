@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>巨神兵 運搬作戦 - Kyojinhei Transport</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #1a1a1a;
+            color: #fff;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        #game-container {
+            position: relative;
+            width: 800px;
+            height: 450px;
+            background: linear-gradient(to bottom, #2b4c7e 0%, #4a6984 40%, #8d775f 70%, #5a4a3a 100%);
+            border: 4px solid #333;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            overflow: hidden;
+        }
+        canvas {
+            display: block;
+            background: transparent;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            box-sizing: border-box;
+            padding: 15px;
+        }
+        .hud {
+            display: flex;
+            justify-content: space-between;
+            font-size: 18px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            font-family: monospace;
+        }
+        #screen-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.75);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        h1 {
+            color: #ff4a4a;
+            margin-bottom: 10px;
+            font-size: 28px;
+            letter-spacing: 2px;
+            text-shadow: 0 0 10px rgba(255,74,74,0.5);
+        }
+        .instructions {
+            font-size: 14px;
+            max-width: 500px;
+            line-height: 1.6;
+            margin-bottom: 25px;
+            color: #ddd;
+            background: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 5px;
+            border: 1px solid #444;
+        }
+        button {
+            background-color: #d4a373;
+            color: #1a1a1a;
+            border: none;
+            padding: 12px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            border-radius: 4px;
+            transition: all 0.2s;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button:hover {
+            background-color: #fefae0;
+            transform: scale(1.05);
+        }
+        #controls-hint {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #aaa;
+        }
+    </style>
+</head>
+<body>
+
+<div id="game-container">
+    <canvas id="gameCanvas" width="800" height="450"></canvas>
+    
+    <div id="ui-layer">
+        <div class="hud">
+            <div id="hud-distance">目標まで: 2500m</div>
+            <div id="hud-integrity">肉塊の安定度: 100%</div>
+        </div>
+    </div>
+
+    <div id="screen-overlay">
+        <h1 id="overlay-title">巨神兵 蘇生地運搬作戦</h1>
+        <div id="overlay-desc" class="instructions">
+            トルメキアの大型当装甲貨物船から放り出された、あるいは風の谷で回収された<strong>「巨神兵の肉塊」</strong>を、風の谷の地下深くにある蘇生場所（無酸素の地下空洞）まで無事に運搬せよ！<br><br>
+            迫り来る風の谷の迎撃砲火や、突風、そして不安定な足場を乗り越えろ。肉塊は物理法則に従って揺れる。衝撃を与えすぎると肉塊が自壊してしまうぞ！
+        </div>
+        <button id="start-btn" onclick="startGame()">作戦開始</button>
+    </div>
+</div>
+
+<div id="controls-hint">
+    【操作方法】 ← / → または A / D : 移動 | Space / ↑ / W : ジャンプ・上昇
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    const overlay = document.getElementById('screen-overlay');
+    const overlayTitle = document.getElementById('overlay-title');
+    const overlayDesc = document.getElementById('overlay-desc');
+    const startBtn = document.getElementById('start-btn');
+    
+    const hudDistance = document.getElementById('hud-distance');
+    const hudIntegrity = document.getElementById('hud-integrity');
+
+    // ゲーム状態
+    let gameState = 'START'; // START, PLAYING, GAMEOVER, CLEAR
+    let keys = {};
+    let particles = [];
+    
+    // カメラとステージ設定
+    let cameraX = 0;
+    const stageWidth = 3500;
+    const gravity = 0.4;
+    
+    // プレイヤー（運搬用重装甲貨物車 / 浮遊クレーン艇）
+    const player = {
+        x: 100,
+        y: 300,
+        vx: 0,
+        vy: 0,
+        width: 60,
+        height: 35,
+        speed: 4,
+        accel: 0.2,
+        friction: 0.92,
+        jumpForce: -8,
+        isGrounded: false
+    };
+
+    // 巨神兵の肉塊（プレイヤーにロープで繋がれた物理オブジェクト）
+    const cargo = {
+        x: 100,
+        y: 340,
+        vx: 0,
+        vy: 0,
+        radius: 24,
+        ropeLength: 50,
+        integrity: 100,
+        elasticity: 0.3
+    };
+
+    // 地形生成
+    let terrainPoints = [];
+    function generateTerrain() {
+        terrainPoints = [];
+        let currentY = 380;
+        for (let x = 0; x <= stageWidth; x += 40) {
+            // 風の谷の険しい崖と、最後の地下深くへの穴を表現
+            if (x > 2800) {
+                // 蘇生場所（地下空洞への急降下）
+                currentY += (x < 3000) ? 8 : (x < 3200) ? -2 : 0;
+            } else {
+                currentY += (Math.sin(x * 0.01) * 15) + (Math.cos(x * 0.03) * 8);
+                // ランダムな段差
+                if (x > 500 && x < 2500 && x % 400 === 0) {
+                    currentY -= 40; // 急な上り
+                }
+                if (x > 800 && x < 2500 && x % 600 === 0) {
+                    currentY += 50; // 谷
+                }
+            }
+            // 境界制限
+            if (currentY > 430) currentY = 430;
+            if (currentY < 250) currentY = 250;
+            
+            // ゴール地点の平地
+            if (x >= 3200) currentY = 400;
+
+            terrainPoints.push({ x: x, y: currentY });
+        }
+    }
+
+    // 地形の高さを取得する関数
+    function getTerrainHeight(x) {
+        if (x < 0) return terrainPoints[0].y;
+        if (x >= stageWidth) return terrainPoints[terrainPoints.length - 1].y;
+        
+        const index = Math.floor(x / 40);
+        const t = (x % 40) / 40;
+        
+        const p1 = terrainPoints[index];
+        const p2 = terrainPoints[index + 1] || p1;
+        
+        return p1.y + (p2.y - p1.y) * t;
+    }
+
+    // 障害物・敵（防衛システムや胞子胞、砲風）
+    let hazards = [];
+    function generateHazards() {
+        hazards = [];
+        // 風の谷のガンシップの残影砲撃風のトラップ、または砲台
+        for (let x = 600; x < 2800; x += 450) {
+            hazards.push({
+                x: x + Math.random() * 100,
+                y: getTerrainHeight(x) - 40,
+                radius: 20,
+                type: 'turret',
+                lastShot: 0,
+                shootInterval: 1500 + Math.random() * 1000
+            });
+        }
+    }
+    
+    let bullets = [];
+
+    // イベントリスナー
+    window.addEventListener('keydown', e => keys[e.code] = true);
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function startGame() {
+        overlay.style.display = 'none';
+        gameState = 'PLAYING';
+        
+        // 初期化
+        player.x = 100;
+        player.vx = 0;
+        player.vy = 0;
+        
+        cargo.vx = 0;
+        cargo.vy = 0;
+        cargo.integrity = 100;
+        
+        cameraX = 0;
+        bullets = [];
+        particles = [];
+        
+        generateTerrain();
+        generateHazards();
+
+        // 開始位置を実際の地形の高さに合わせて設定
+        // （地形生成より前に高い座標を決め打ちしていたため、開始直後に落下してダメージを受けていた）
+        const startGroundY = getTerrainHeight(player.x + player.width / 2) - player.height;
+        player.y = startGroundY;
+        player.isGrounded = true;
+
+        const anchorX = player.x + player.width / 2;
+        const anchorY = player.y + player.height / 2;
+        cargo.x = anchorX;
+        cargo.y = Math.min(anchorY + cargo.ropeLength, getTerrainHeight(anchorX) - cargo.radius);
+        
+        // ループ開始（重複防止）
+        if (!window.animationFrameId) {
+            window.animationFrameId = requestAnimationFrame(gameLoop);
+        }
+    }
+
+    function triggerGameOver(msg) {
+        gameState = 'GAMEOVER';
+        overlay.style.display = 'flex';
+        overlayTitle.textContent = '作戦失敗...';
+        overlayDesc.innerHTML = msg + '<br><br>巨神兵の肉塊は完全に沈黙した、あるいは世界の崩壊を早めてしまった。';
+        startBtn.textContent = '再挑戦する';
+    }
+
+    function triggerClear() {
+        gameState = 'CLEAR';
+        overlay.style.display = 'flex';
+        overlayTitle.textContent = '作戦成功！';
+        overlayDesc.innerHTML = `無事に巨神兵の肉塊を地下の蘇生場所に安置した。<br>蠢く肉は不気味な鼓動を刻み、復活の時を待っている...。<br><br><strong>残り安定度: ${Math.floor(cargo.integrity)}%</strong>`;
+        startBtn.textContent = 'もう一度運ぶ';
+    }
+
+    // 粒子エフェクト
+    function spawnParticle(x, y, color, size=4) {
+        particles.push({
+            x, y,
+            vx: (Math.random() - 0.5) * 4,
+            vy: (Math.random() - 0.5) * 4,
+            life: 1,
+            decay: 0.02 + Math.random() * 0.03,
+            color,
+            size
+        });
+    }
+
+    // メインループ
+    function gameLoop(timestamp) {
+        update(timestamp);
+        render();
+        
+        window.animationFrameId = requestAnimationFrame(gameLoop);
+    }
+
+    // 更新処理
+    function update(timestamp) {
+        if (gameState !== 'PLAYING') return;
+
+        // --- 1. プレイヤーの移動制御 ---
+        if (keys['ArrowLeft'] || keys['KeyA']) {
+            player.vx -= player.accel;
+        }
+        if (keys['ArrowRight'] || keys['KeyD']) {
+            player.vx += player.accel;
+        }
+        if (keys['Space'] || keys['ArrowUp'] || keys['KeyW']) {
+            if (player.isGrounded) {
+                player.vy = player.jumpForce;
+                player.isGrounded = false;
+                for(let i=0; i<8; i++) spawnParticle(player.x + player.width/2, player.y + player.height, '#8a7355');
+            }
+        }
+
+        // 物理演算（プレイヤー）
+        player.vx *= player.friction;
+        player.vy += gravity;
+        player.x += player.vx;
+        player.y += player.vy;
+
+        // 地形衝突（プレイヤー）
+        const groundY = getTerrainHeight(player.x + player.width / 2) - player.height;
+        if (player.y >= groundY) {
+            player.y = groundY;
+            player.vy = 0;
+            player.isGrounded = true;
+        }
+
+        // 画面外・ステージ制限
+        if (player.x < 0) player.x = 0;
+        if (player.x > stageWidth - player.width) player.x = stageWidth - player.width;
+
+        // --- 2. 巨神兵の肉塊の物理演算 (ペンジュラム・スプリング結合) ---
+        cargo.vy += gravity * 0.8; // 肉塊への重力
+        cargo.x += cargo.vx;
+        cargo.y += cargo.vy;
+
+        // プレイヤーの中心点
+        const anchorX = player.x + player.width / 2;
+        const anchorY = player.y + player.height / 2;
+
+        // ロープの拘束力
+        const dx = cargo.x - anchorX;
+        const dy = cargo.y - anchorY;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance > cargo.ropeLength) {
+            const overstretch = distance - cargo.ropeLength;
+            // 復元力ベクトルの計算
+            const k = 0.15; // ロープの硬さ
+            const fx = (dx / distance) * overstretch * k;
+            const fy = (dy / distance) * overstretch * k;
+
+            // 速度に反映
+            cargo.vx -= fx;
+            cargo.vy -= fy;
+            
+            // プレイヤー側にも少し反動を付与（重量感の演出）
+            player.vx += fx * 0.2;
+            player.vy += fy * 0.2;
+
+            // 長さの強制補正
+            cargo.x = anchorX + (dx / distance) * cargo.ropeLength;
+            cargo.y = anchorY + (dy / distance) * cargo.ropeLength;
+        }
+        
+        // 摩擦
+        cargo.vx *= 0.98;
+        cargo.vy *= 0.98;
+
+        // 肉塊の地形衝突
+        const cargoGroundY = getTerrainHeight(cargo.x) - cargo.radius;
+        if (cargo.y >= cargoGroundY) {
+            const impact = Math.abs(cargo.vy) + Math.abs(cargo.vx);
+            cargo.y = cargoGroundY;
+            cargo.vy = -cargo.vy * cargo.elasticity;
+            cargo.vx *= 0.8;
+
+            if (impact > 1.5) {
+                const damage = impact * 4;
+                cargo.integrity -= damage;
+                // 赤い肉塊の飛び散りエフェクト
+                for (let i = 0; i < Math.floor(damage); i++) {
+                    spawnParticle(cargo.x, cargo.y + cargo.radius, '#9e2a2b', Math.random()*5 + 3);
+                }
+            }
+        }
+
+        // --- 3. 敵・トラップの処理 ---
+        hazards.forEach(h => {
+            if (h.type === 'turret') {
+                // カメラ内にあれば撃ってくる
+                if (h.x > cameraX - 50 && h.x < cameraX + 850) {
+                    if (timestamp - h.lastShot > h.shootInterval) {
+                        // プレイヤー方向へ弾を発射
+                        const angle = Math.atan2((player.y + 10) - h.y, player.x - h.x);
+                        bullets.push({
+                            x: h.x,
+                            y: h.y,
+                            vx: Math.cos(angle) * 5,
+                            vy: Math.sin(angle) * 5,
+                            radius: 5
+                        });
+                        h.lastShot = timestamp;
+                    }
+                }
+            }
+        });
+
+        // 弾の更新と衝突判定
+        for (let i = bullets.length - 1; i >= 0; i--) {
+            let b = bullets[i];
+            b.x += b.vx;
+            b.y += b.vy;
+
+            // 肉塊との当たり判定
+            const bdx = b.x - cargo.x;
+            const bdy = b.y - cargo.y;
+            const bDist = Math.sqrt(bdx * bdx + bdy * bdy);
+
+            if (bDist < b.radius + cargo.radius) {
+                cargo.integrity -= 15;
+                for (let p = 0; p < 12; p++) spawnParticle(b.x, b.y, '#ff5555', 4);
+                bullets.splice(i, 1);
+                continue;
+            }
+
+            // プレイヤーとの当たり判定
+            if (b.x > player.x && b.x < player.x + player.width &&
+                b.y > player.y && b.y < player.y + player.height) {
+                // プレイヤーが撃たれると大きくノックバック
+                player.vx += b.vx * 0.5;
+                player.vy -= 2;
+                for (let p = 0; p < 6; p++) spawnParticle(b.x, b.y, '#ffaa00', 3);
+                bullets.splice(i, 1);
+                continue;
+            }
+
+            // 画面外か地形に当たったら消去
+            if (b.x < cameraX - 100 || b.x > cameraX + 900 || b.y > getTerrainHeight(b.x)) {
+                bullets.splice(i, 1);
+            }
+        }
+
+        // 粒子更新
+        for (let i = particles.length - 1; i >= 0; i--) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= p.decay;
+            if (p.life <= 0) particles.splice(i, 1);
+        }
+
+        // --- 4. ゲームオーバー・クリア判定 ---
+        if (cargo.integrity <= 0) {
+            triggerGameOver('巨神兵の肉塊が衝撃に耐えきれず崩壊した！');
+        }
+
+        // ゴール判定（蘇生場所：X座標 3200 以降の地下空洞）
+        if (cargo.x >= 3200 && cargo.y >= 350) {
+            triggerClear();
+        }
+
+        // --- 5. カメラ追従 ---
+        const targetCamX = player.x - 250;
+        cameraX += (targetCamX - cameraX) * 0.1;
+        if (cameraX < 0) cameraX = 0;
+        if (cameraX > stageWidth - 800) cameraX = stageWidth - 800;
+
+        // UI更新
+        const distanceLeft = Math.max(0, Math.floor(3200 - cargo.x));
+        hudDistance.textContent = `目標まで: ${distanceLeft}m`;
+        hudIntegrity.textContent = `肉塊の安定度: ${Math.max(0, Math.floor(cargo.integrity))}%`;
+        if (cargo.integrity < 40) {
+            hudIntegrity.style.color = '#ff4a4a';
+        } else {
+            hudIntegrity.style.color = '#fff';
+        }
+    }
+
+    // 描画処理
+    function render() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.save();
+        ctx.translate(-cameraX, 0);
+
+        // 遠景（風の谷のシンボル：風車や岩肌のシルエット）
+        drawBackgroundDetails();
+
+        // ゴール地帯のインジケータ（蘇生場所の怪しい光）
+        if (stageWidth - cameraX > 0) {
+            ctx.fillStyle = 'rgba(138, 43, 226, 0.15)';
+            ctx.fillRect(3150, 0, 350, 450);
+            
+            // 蘇生カプセル・空洞の背景
+            ctx.strokeStyle = '#8a2be2';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(3350, 380, 60, Math.PI, 0);
+            ctx.stroke();
+            
+            ctx.fillStyle = '#8a2be2';
+            ctx.font = '12px monospace';
+            ctx.fillText("【巨神兵 蘇生地下空洞】", 3230, 300);
+        }
+
+        // 地形の描画
+        ctx.fillStyle = '#3a2f28';
+        ctx.beginPath();
+        ctx.moveTo(0, canvas.height);
+        terrainPoints.forEach(p => {
+            ctx.lineTo(p.x, p.y);
+        });
+        ctx.lineTo(stageWidth, canvas.height);
+        ctx.closePath();
+        ctx.fill();
+
+        // 地表のライン（草や毒の胞子層をイメージ）
+        ctx.strokeStyle = '#556b2f';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        terrainPoints.forEach((p, idx) => {
+            if (idx === 0) ctx.moveTo(p.x, p.y);
+            else ctx.lineTo(p.x, p.y);
+        });
+        ctx.stroke();
+
+        // 敵（砲台）の描画
+        hazards.forEach(h => {
+            ctx.fillStyle = '#4f5d75';
+            ctx.beginPath();
+            ctx.arc(h.x, h.y, h.radius, Math.PI, 0);
+            ctx.fill();
+            // 砲身
+            ctx.strokeStyle = '#2d3748';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(h.x, h.y - 10);
+            ctx.lineTo(h.x - 15, h.y - 25);
+            ctx.stroke();
+        });
+
+        // 弾の描画
+        ctx.fillStyle = '#ff3333';
+        bullets.forEach(b => {
+            ctx.beginPath();
+            ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+            ctx.fill();
+        });
+
+        // ロープ（クレーンワイヤー）の描画
+        ctx.strokeStyle = '#d3d3d3';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(player.x + player.width / 2, player.y + player.height / 2);
+        ctx.lineTo(cargo.x, cargo.y);
+        ctx.stroke();
+
+        // プレイヤー（トルメキア運搬艇風のビジュアル）
+        ctx.fillStyle = '#708090'; // スレートグレイ（装甲）
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+        // 操縦席の窓
+        ctx.fillStyle = '#00ffff';
+        ctx.fillRect(player.x + player.width - 15, player.y + 5, 10, 10);
+        // クレーン台座
+        ctx.fillStyle = '#4f5d75';
+        ctx.fillRect(player.x + player.width/2 - 6, player.y + player.height - 5, 12, 8);
+
+        // 巨神兵の肉塊の描画（脈打つオーガニックな赤、核が見える）
+        const pulse = 1 + Math.sin(Date.now() * 0.01) * 0.06;
+        const r = cargo.radius * pulse;
+        
+        // ベースの肉々しい赤
+        let gradient = ctx.createRadialGradient(cargo.x, cargo.y, r * 0.2, cargo.x, cargo.y, r);
+        gradient.addColorStop(0, '#ff4d4d');
+        gradient.addColorStop(0.6, '#9e2a2b');
+        gradient.addColorStop(1, '#3f0c10');
+        
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(cargo.x, cargo.y, r, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 不気味に光る不完全な「眼」または「秘石・核」
+        ctx.fillStyle = 'rgba(255, 230, 0, 0.8)';
+        ctx.beginPath();
+        ctx.arc(cargo.x - 4, cargo.y - 4, 5 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 肉塊の繊維模様の簡易表現
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(cargo.x, cargo.y, r * 0.7, 0, Math.PI);
+        ctx.stroke();
+
+        // 粒子の描画
+        particles.forEach(p => {
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.life;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        });
+        ctx.globalAlpha = 1.0; // リセット
+
+        ctx.restore();
+    }
+
+    function drawBackgroundDetails() {
+        // 簡易的な風車（背景）
+        ctx.fillStyle = '#3a4f66';
+        ctx.fillRect(400, 200, 10, 80);
+        ctx.fillRect(1200, 180, 10, 90);
+        ctx.fillRect(2200, 210, 10, 70);
+        
+        // 雲のような霧（腐海から流れる胞子）
+        ctx.fillStyle = 'rgba(200, 210, 180, 0.05)';
+        for(let i=0; i<5; i++) {
+            ctx.beginPath();
+            ctx.arc(200 + i*600, 100, 120, 0, Math.PI*2);
+            ctx.fill();
+        }
+    }
+
+    // 初回描画用に地形だけ作っておく
+    generateTerrain();
+    render();
+</script>
+
+</body>
+</html>
